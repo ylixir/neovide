@@ -29,65 +29,22 @@ pub struct DrawCommand {
     pub scale: u16
 }
 
-pub struct Editor {
-    pub grid: Vec<Vec<GridCell>>,
+pub struct Grid {
+    pub content: Vec<Vec<GridCell>>,
     pub dirty: Vec<Vec<bool>>,
     pub should_clear: bool,
 
-    pub title: String,
+    pub anchor: WindowAnchor,
+    pub position: (u64, u64),
     pub size: (u64, u64),
-    pub font_name: Option<String>,
-    pub font_size: Option<f32>,
-    pub cursor: Cursor,
-    pub default_colors: Colors,
-    pub defined_styles: HashMap<u64, Style>,
-    pub previous_style: Option<Style>
+
+    pub child_grids: Vec<Grid>
 }
 
-impl Editor {
-    pub fn new() -> Editor {
-        let mut editor = Editor {
-            grid: Vec::new(),
-            dirty: Vec::new(),
-            should_clear: true,
-
-            title: "Neovide".to_string(),
-            cursor: Cursor::new(),
-            size: INITIAL_DIMENSIONS,
-            font_name: None,
-            font_size: None,
-            default_colors: Colors::new(Some(colors::WHITE), Some(colors::BLACK), Some(colors::GREY)),
-            defined_styles: HashMap::new(),
-            previous_style: None
-        };
-
-        editor.clear();
-        editor
-    }
-
-    pub fn handle_redraw_event(&mut self, event: RedrawEvent) {
-        match event {
-            RedrawEvent::SetTitle { title } => self.title = title,
-            RedrawEvent::ModeInfoSet { cursor_modes } => self.cursor.mode_list = cursor_modes,
-            RedrawEvent::OptionSet { gui_option } => self.set_option(gui_option),
-            RedrawEvent::ModeChange { mode_index } => self.cursor.change_mode(mode_index, &self.defined_styles),
-            RedrawEvent::BusyStart => self.cursor.enabled = false,
-            RedrawEvent::BusyStop => self.cursor.enabled = true,
-            RedrawEvent::Flush => REDRAW_SCHEDULER.request_redraw(),
-            RedrawEvent::Resize { width, height, .. } => self.resize((width, height)),
-            RedrawEvent::DefaultColorsSet { colors } => self.default_colors = colors,
-            RedrawEvent::HighlightAttributesDefine { id, style } => { self.defined_styles.insert(id, style); },
-            RedrawEvent::GridLine { row, column_start, cells, .. } => self.draw_grid_line(row, column_start, cells),
-            RedrawEvent::Clear { .. } => self.clear(),
-            RedrawEvent::CursorGoto { row, column, .. } => self.cursor.position = (row, column),
-            RedrawEvent::Scroll { top, bottom, left, right, rows, columns, .. } => self.scroll_region(top, bottom, left, right, rows, columns),
-            _ => {}
-        };
-    }
-
-    pub fn build_draw_commands(&mut self) -> (Vec<DrawCommand>, bool) {
+impl Grid {
+    pub fn build_draw_commands(&mut self, style_data: &StyleData) -> (Vec<DrawCommand>, bool) {
         let mut draw_commands = Vec::new();
-        for (row_index, row) in self.grid.iter().enumerate() {
+        for (row_index, row) in self.content.iter().enumerate() {
             let mut command = None;
 
             fn add_command(commands_list: &mut Vec<DrawCommand>, command: Option<DrawCommand>) {
@@ -113,7 +70,7 @@ impl Editor {
             }
 
             for (col_index, cell) in row.iter().enumerate() {
-                let (character, style) = cell.clone().unwrap_or_else(|| (' '.to_string(), Some(Style::new(self.default_colors.clone()))));
+                let (character, style) = cell.clone().unwrap_or_else(|| (' '.to_string(), Some(Style::new(style_data.default_colors.clone()))));
                 if character.is_empty() {
                     add_character(&mut command, &" ", row_index as u64, col_index as u64, style.clone());
                     add_command(&mut draw_commands, command);
@@ -148,11 +105,11 @@ impl Editor {
         (draw_commands, should_clear)
     }
 
-    fn draw_grid_line_cell(&mut self, row_index: u64, column_pos: &mut u64, cell: GridLineCell) {
+    fn draw_grid_line_cell(&mut self, row_index: u64, column_pos: &mut u64, cell: GridLineCell, style_data: &mut StyleData) {
         let style = match cell.highlight_id {
             Some(0) => None,
-            Some(style_id) => self.defined_styles.get(&style_id).map(|style| style.clone()),
-            None => self.previous_style.clone()
+            Some(style_id) => style_data.defined_styles.get(&style_id).map(|style| style.clone()),
+            None => style_data.previous_style.clone()
         };
 
         let mut text = cell.text;
@@ -160,7 +117,7 @@ impl Editor {
             text = text.repeat(times as usize);
         }
 
-        let row = self.grid.get_mut(row_index as usize).expect("Grid must have size greater than row_index");
+        let row = self.content.get_mut(row_index as usize).expect("Grid must have size greater than row_index");
         let dirty_row = &mut self.dirty[row_index as usize];
 
         if text.is_empty() {
@@ -177,17 +134,15 @@ impl Editor {
             }
             *column_pos = *column_pos + text.graphemes(true).count() as u64;
         }
-        self.previous_style = style;
+        style_data.previous_style = style;
     }
 
-    fn draw_grid_line(&mut self, row: u64, column_start: u64, cells: Vec<GridLineCell>) {
+    fn draw_grid_line(&mut self, row: u64, column_start: u64, cells: Vec<GridLineCell>, style_data: &mut StyleData) {
         if row < self.grid.len() as u64 {
             let mut column_pos = column_start;
             for cell in cells {
-                self.draw_grid_line_cell(row, &mut column_pos, cell);
+                self.draw_grid_line_cell(row, &mut column_pos, cell, style_data);
             }
-        } else {
-            println!("Draw command out of bounds");
         }
     }
 
@@ -247,6 +202,82 @@ impl Editor {
         self.grid = vec![vec![None; width as usize]; height as usize];
         self.dirty = vec![vec![true; width as usize]; height as usize];
         self.should_clear = true;
+    }
+}
+
+pub struct StyleData {
+    pub default_colors: Colors,
+    pub defined_styles: HashMap<u64, Style>,
+    pub previous_style: Option<Style>
+}
+
+impl StyleData {
+    pub fn new() -> StyleData {
+        StyleData {
+            default_colors: Colors::new(Some(colors::WHITE), Some(colors::BLACK), Some(colors::GREY)),
+            defined_styles: HashMap::new(),
+            previous_style: None
+        }
+    }
+}
+
+pub struct Editor {
+    pub root_grids: HashMap<u64, Grid>,
+    pub hidden_grids: HashMap<u64, Grid>,
+
+    pub title: String,
+    pub font_name: Option<String>,
+    pub font_size: Option<f32>,
+    pub cursor: Cursor,
+
+    pub style_data: StyleData
+}
+
+impl Editor {
+    pub fn new() -> Editor {
+        let mut editor = Editor {
+            root_grids: HashMap::new(),
+            hidden_grids: HashMap::new(),
+
+            title: "Neovide".to_string(),
+            cursor: Cursor::new(),
+            font_name: None,
+            font_size: None,
+
+            style_data: StyleData
+        };
+
+        editor.clear();
+        editor
+    }
+
+    pub fn handle_redraw_event(&mut self, event: RedrawEvent) {
+        match event {
+            RedrawEvent::SetTitle { title } => self.title = title,
+            RedrawEvent::ModeInfoSet { cursor_modes } => self.cursor.mode_list = cursor_modes,
+            RedrawEvent::OptionSet { gui_option } => self.set_option(gui_option),
+            RedrawEvent::ModeChange { mode_index } => self.cursor.change_mode(mode_index, &self.style_data.defined_styles),
+            RedrawEvent::BusyStart => self.cursor.enabled = false,
+            RedrawEvent::BusyStop => self.cursor.enabled = true,
+            RedrawEvent::Flush => REDRAW_SCHEDULER.request_redraw(),
+            RedrawEvent::Resize { grid, width, height } => self.resize((width, height)), // TODO: Target Grid
+            RedrawEvent::DefaultColorsSet { colors } => self.style_data.default_colors = colors,
+            RedrawEvent::HighlightAttributesDefine { id, style } => { self.style_data.defined_styles.insert(id, style); },
+            RedrawEvent::GridLine { row, column_start, cells, .. } => self.draw_grid_line(row, column_start, cells), // TODO: Target Grid
+            RedrawEvent::Clear { .. } => self.clear(), // TODO: Target Grid
+            RedrawEvent::CursorGoto { row, column, .. } => self.cursor.position = (row, column), // TODO: Target Grid
+            RedrawEvent::Scroll { top, bottom, left, right, rows, columns, .. } => self.scroll_region(top, bottom, left, right, rows, columns), // TODO: TArget Grid
+            RedrawEvent::WindowPosition { .. } => { },
+            RedrawEvent::WindowFloatPosition { .. } => { },
+            RedrawEvent::WindowExternalPosition { .. } => { },
+            RedrawEvent::WindowHide { .. } => { },
+            RedrawEvent::WindowClose { .. } => { },
+            RedrawEvent::MessageSetPosition { .. } => { }
+            _ => {}
+        };
+    }
+
+    fn find_grid(&mut self) -> &mut Grid {
     }
 
     fn set_option(&mut self, gui_option: GuiOption) {
