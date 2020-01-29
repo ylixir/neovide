@@ -7,7 +7,7 @@ use skulpin::skia_safe::icu;
 use skulpin::winit::dpi::{LogicalSize, LogicalPosition};
 use skulpin::winit::event::{ElementState, Event, MouseScrollDelta, StartCause, WindowEvent};
 use skulpin::winit::event_loop::{ControlFlow, EventLoop};
-use skulpin::winit::window::{Icon, WindowBuilder};
+use skulpin::winit::window::{CursorIcon, Icon, WindowBuilder};
 
 use crate::bridge::{construct_keybinding_string, BRIDGE, UiCommand};
 use crate::renderer::Renderer;
@@ -54,6 +54,7 @@ pub fn ui_loop() {
         .with_title(&title)
         .with_inner_size(logical_size)
         .with_window_icon(Some(icon))
+        .with_decorations(false)
         .build(&event_loop)
         .expect("Failed to create window"));
 
@@ -108,7 +109,33 @@ pub fn ui_loop() {
                 },
                 ..
             } => {
-                let position: LogicalPosition = position;
+                let window_size = window.inner_size();
+                if position.x < 10.0 {
+                    if position.y < 10.0 {
+                        window.set_cursor_icon(CursorIcon::NwResize);
+                    } else if position.y as f64 > window_size.height - 10.0 {
+                        window.set_cursor_icon(CursorIcon::SwResize);
+                    } else {
+                        window.set_cursor_icon(CursorIcon::WResize);
+                    }
+                } else if position.x as f64 > window_size.width - 10.0 {
+                    if position.y < 10.0 {
+                        window.set_cursor_icon(CursorIcon::NeResize);
+                    } else if position.y as f64 > window_size.height - 10.0 {
+                        window.set_cursor_icon(CursorIcon::SeResize);
+                    } else {
+                        window.set_cursor_icon(CursorIcon::WResize);
+                    }
+                } else {
+                    if position.y < 10.0 {
+                        window.set_cursor_icon(CursorIcon::NResize);
+                    } else if position.y as f64 > window_size.height - 10.0 {
+                        window.set_cursor_icon(CursorIcon::SResize);
+                    } else {
+                        window.set_cursor_icon(CursorIcon::Default);
+                    }
+                }
+
                 let grid_y = (position.x / renderer.font_width as f64) as i64;
                 let grid_x = (position.y / renderer.font_height as f64) as i64;
                 let (old_x, old_y) = mouse_pos;
